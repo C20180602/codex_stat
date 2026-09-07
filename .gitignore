@@ -1,0 +1,28 @@
+# Node / Vite dependencies and generated site
+node_modules/
+dist/
+.vite/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Locally generated usage records and indexes (may contain personal data)
+codex_usage_data/
+
+# Local configuration and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files and logs
+.DS_Store
+Thumbs.db
+*.log
