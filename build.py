@@ -18,15 +18,34 @@ DEFAULT_BASE_DIRS = (Path("/d"), Path("/e"))
 DATA_DIR_NAME = "codex_usage_data"
 TIME_INDEX_NAME = "jsonl_time_index.json"
 OFFSET_INDEX_NAME = "jsonl_offset_index.json"
+WHITELIST_CONFIG_PATH = Path(__file__).with_name("config") / "codex_usage_whitelist.json"
+
+
+def load_whitelisted_users(path=WHITELIST_CONFIG_PATH):
+    """读取不采集、不封禁的用户名白名单配置。"""
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        raise RuntimeError(f"找不到白名单配置 {path}。")
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"无法读取白名单配置 {path}: {error}") from error
+    users = data.get("whitelisted_users") if isinstance(data, dict) else None
+    if not isinstance(users, list) or any(not isinstance(user, str) or not user for user in users):
+        raise RuntimeError(f"白名单配置 {path} 必须包含字符串数组 whitelisted_users。")
+    return frozenset(users)
 
 
 def rollout_files(base_dirs):
     """迭代 /d、/e 各用户 Codex sessions 下的 JSONL 文件。"""
+    whitelisted_users = load_whitelisted_users()
     for base_dir in base_dirs:
         if not base_dir.is_dir():
             continue
         for user_home in base_dir.iterdir():
             if not user_home.is_dir():
+                continue
+            if user_home.name in whitelisted_users:
                 continue
             # Codex 当前目录名为 sessions；也兼容可能存在的旧版 session。
             for directory_name in ("sessions", "session"):

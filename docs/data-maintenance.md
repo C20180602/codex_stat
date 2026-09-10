@@ -4,6 +4,8 @@
 
 `build.py` 会扫描 `/d` 和 `/e` 下用户目录内的 `.codex/sessions/`（也兼容旧的 `.codex/session/`）JSONL 记录，提取每轮事件的时间戳和 `total_tokens`。
 
+白名单位于 [`config/codex_usage_whitelist.json`](../config/codex_usage_whitelist.json) 的 `whitelisted_users` 数组。列出的用户会被 `build.py`、`update.py` 和限额封禁任务跳过；即使数据目录中留有历史 TXT，也不会参与近 24 小时封禁判断。
+
 生成的 `codex_usage_data/` 可能包含个人用量信息，因此默认不纳入 Git。若需要共享示例数据，请使用经过脱敏的独立样本，而非直接提交此目录。
 
 ## 初始化与更新

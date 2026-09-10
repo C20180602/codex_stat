@@ -18,11 +18,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from build import DATA_DIR_NAME, DEFAULT_BASE_DIRS
+from build import DATA_DIR_NAME, DEFAULT_BASE_DIRS, load_whitelisted_users
 from update import update
 
 
-DEFAULT_LIMIT = 150_000_000
+DEFAULT_LIMIT = 200_000_000
 DEFAULT_DOMAINS = ("chatgpt.com", "api.openai.com")
 BLOCK_INDEX_NAME = "codex_block_index.json"
 RULE_FILE_NAME = "codex_over_limit.yaml"
@@ -81,6 +81,7 @@ def recent_totals(data_dir, now):
     window_end = now.astimezone(timezone.utc)
     window_start = window_end - timedelta(hours=24)
     totals = {}
+    whitelisted_users = load_whitelisted_users()
     try:
         files = sorted(path for path in data_dir.iterdir() if path.is_file() and path.suffix == ".txt")
     except FileNotFoundError:
@@ -89,6 +90,8 @@ def recent_totals(data_dir, now):
         raise RuntimeError(f"无法列出用量目录 {data_dir}: {error}") from error
 
     for path in files:
+        if path.stem in whitelisted_users:
+            continue
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError as error:

@@ -41,3 +41,9 @@ docs/             维护和数据格式说明
 `codex_usage_data/`、`node_modules/`、`dist/` 和 Python 缓存均为本地生成内容，已在 `.gitignore` 中排除，不应提交。数据文件格式、首次采集和定时更新方式见 [数据维护说明](docs/data-maintenance.md)。
 
 若由服务器管理员使用 mihomo 按用户超限拦截 Codex 请求，见 [mihomo Codex 限额拦截说明](docs/mihomo-codex-limit.md)。脚本不会自行安装 crontab。
+
+## 超限账户封禁
+
+使用mihomo热更新，封禁近24h超限200M token的用户UID的codex进程流量
+
+*/20 * * * * cd /d/chensq/codex_stat && /usr/bin/python3 enforce_codex_limit.py --mihomo-controller-url http://127.0.0.1:9090 --base-dir /home --rules-file /root/clash-for-linux/runtime/codex_over_limit.yaml >> codex_usage_data/enforce_codex_limit.log 2>&1
