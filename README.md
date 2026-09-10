@@ -20,6 +20,7 @@ npm run dev
 | --- | --- |
 | `python3 build.py` | 完整重建本地用量数据 |
 | `python3 update.py` | 基于索引增量更新数据 |
+| `python3 enforce_codex_limit.py --mihomo-controller-url http://127.0.0.1:9090 --dry-run` | 扫描 mihomo UID，检查滚动近 24 小时用量并预览封禁结果 |
 | `npm run dev` | 启动开发服务器 |
 | `npm run build` | 构建生产静态文件至 `dist/` |
 | `npm start` | 启动生产服务器（先执行构建） |
@@ -38,3 +39,5 @@ docs/             维护和数据格式说明
 ```
 
 `codex_usage_data/`、`node_modules/`、`dist/` 和 Python 缓存均为本地生成内容，已在 `.gitignore` 中排除，不应提交。数据文件格式、首次采集和定时更新方式见 [数据维护说明](docs/data-maintenance.md)。
+
+若由服务器管理员使用 mihomo 按用户超限拦截 Codex 请求，见 [mihomo Codex 限额拦截说明](docs/mihomo-codex-limit.md)。脚本不会自行安装 crontab。
