@@ -18,8 +18,10 @@ from build import (
     OFFSET_INDEX_NAME,
     TIME_INDEX_NAME,
     index_key,
+    lock_output_dir,
     rollout_files,
     token_events,
+    write_index,
 )
 
 
@@ -30,18 +32,11 @@ def read_index(path):
             data = json.load(file)
     except FileNotFoundError:
         raise RuntimeError(f"找不到索引 {path}；请先运行 python3 build.py。")
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise RuntimeError(f"无法读取索引 {path}: {error}") from error
     if not isinstance(data, dict):
         raise RuntimeError(f"索引 {path} 的根节点必须是 JSON 对象。")
     return data
-
-
-def write_json(path, data):
-    """以可读、稳定的格式保存索引。"""
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2, sort_keys=True)
-        file.write("\n")
 
 
 def append_user_events(output_dir, events_by_user):
@@ -64,14 +59,17 @@ def append_user_events(output_dir, events_by_user):
 
 def update(base_dirs, output_dir):
     """处理新增或有修改的 JSONL，并更新数据文件与索引。"""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    with lock_output_dir(output_dir):
+        return _update(base_dirs, output_dir)
+
+
+def _update(base_dirs, output_dir):
     time_path = output_dir / TIME_INDEX_NAME
     offset_path = output_dir / OFFSET_INDEX_NAME
     time_index = read_index(time_path)
     offset_index = read_index(offset_path)
 
     new_events_by_user = defaultdict(list)
-    index_updates = 0
     new_files = 0
     changed_files = 0
     skipped_files = []
@@ -84,24 +82,9 @@ def update(base_dirs, output_dir):
             print(f"无法读取 {rollout_path} 的状态: {error}", file=sys.stderr)
             continue
 
-        if key not in time_index:
-            events, offset = token_events(rollout_path)
-            new_events_by_user[username].extend(events)
-            time_index[key] = stat.st_mtime
-            offset_index[key] = offset
-            new_files += 1
-            index_updates += 1
-            continue
-
-        if time_index[key] == stat.st_mtime:
-            continue
-
-        previous_offset = offset_index.get(key)
-        if (
-            isinstance(previous_offset, bool)
-            or not isinstance(previous_offset, int)
-            or previous_offset < 0
-        ):
+        is_new = key not in offset_index and key not in time_index
+        previous_offset = 0 if is_new else offset_index.get(key)
+        if type(previous_offset) is not int or previous_offset < 0:
             skipped_files.append(
                 f"{rollout_path}（索引偏移量无效：{previous_offset!r}）"
             )
@@ -112,17 +95,28 @@ def update(base_dirs, output_dir):
                 f"{rollout_path}（文件大小 {stat.st_size} 小于已记录偏移量 {previous_offset}）"
             )
             continue
+        if time_index.get(key) == stat.st_mtime and stat.st_size == previous_offset:
+            continue
 
-        events, offset = token_events(rollout_path, start_offset=previous_offset)
+        try:
+            events, offset = token_events(rollout_path, start_offset=previous_offset)
+        except (OSError, ValueError) as error:
+            skipped_files.append(f"{rollout_path}（{error}）")
+            continue
         new_events_by_user[username].extend(events)
+        if is_new:
+            new_files += 1
+        elif offset != previous_offset or time_index.get(key) != stat.st_mtime:
+            changed_files += 1
         time_index[key] = stat.st_mtime
         offset_index[key] = offset
-        changed_files += 1
-        index_updates += 1
 
     users_updated, events_appended = append_user_events(output_dir, new_events_by_user)
-    write_json(time_path, time_index)
-    write_json(offset_path, offset_index)
+    index_updates = new_files + changed_files
+    if index_updates:
+        # 先提交偏移。时间索引仍旧时，下次扫描也能从已提交的位置继续。
+        write_index(offset_path, offset_index)
+        write_index(time_path, time_index)
 
     return {
         "new_files": new_files,

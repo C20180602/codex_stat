@@ -2,7 +2,7 @@
 """扫描 mihomo UID、检查 Codex 近 24 小时用量并热更新封禁规则。
 
 供每小时的单次 cron 任务调用。脚本会扫描当前连接、合并旧扫描快照的 UID
-映射、增量采集 session，用滚动近 24 小时 total_tokens 判断 150M 上限，并
+映射、增量采集 session，用滚动近 24 小时 total_tokens 判断 300M 上限，并
 用 mihomo rule-provider API 热更新 ``UID + DOMAIN`` 封禁规则。不会重启 mihomo。
 """
 
@@ -22,7 +22,7 @@ from build import DATA_DIR_NAME, DEFAULT_BASE_DIRS, load_whitelisted_users
 from update import update
 
 
-DEFAULT_LIMIT = 200_000_000
+DEFAULT_LIMIT = 300_000_000
 DEFAULT_DOMAINS = ("chatgpt.com", "api.openai.com")
 BLOCK_INDEX_NAME = "codex_block_index.json"
 RULE_FILE_NAME = "codex_over_limit.yaml"

@@ -8,10 +8,15 @@
 """
 
 import argparse
+import fcntl
 import json
+import os
+import stat
 import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 DEFAULT_BASE_DIRS = (Path("/d"), Path("/e"))
@@ -19,6 +24,36 @@ DATA_DIR_NAME = "codex_usage_data"
 TIME_INDEX_NAME = "jsonl_time_index.json"
 OFFSET_INDEX_NAME = "jsonl_offset_index.json"
 WHITELIST_CONFIG_PATH = Path(__file__).with_name("config") / "codex_usage_whitelist.json"
+
+
+@contextmanager
+def lock_output_dir(output_dir):
+    """串行执行同一输出目录的全量构建和增量更新。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def write_index(path, data):
+    """写完索引再原子替换，使读者始终看到一份完整的 JSON。"""
+    with TemporaryDirectory(prefix=f".{path.name}.", dir=path.parent) as directory:
+        temporary_path = Path(directory) / path.name
+        with temporary_path.open("x", encoding="utf-8", newline="\n") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2, sort_keys=True)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            pass
+        else:
+            temporary_path.chmod(mode)
+        temporary_path.replace(path)
 
 
 def load_whitelisted_users(path=WHITELIST_CONFIG_PATH):
@@ -63,54 +98,65 @@ def index_key(username, rollout_path):
 
 
 def token_events(rollout_path, start_offset=0):
-    """从 ``start_offset`` 读取 JSONL，返回事件序列和读取后的末尾偏移。"""
+    """从 ``start_offset`` 读取 JSONL，返回事件序列和下次读取位置。"""
     events = []
-    offset = 0
-    try:
-        # 使用二进制模式，使 tell() 明确表示字节偏移量；JSONL 是 UTF-8。
-        with rollout_path.open("rb") as file:
-            file.seek(start_offset)
-            offset = file.tell()
-            for raw_line in file:
-                offset = file.tell()
-                try:
-                    record = json.loads(raw_line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
+    offset = start_offset
+    # 使用二进制模式，使 tell() 明确表示字节偏移量；JSONL 是 UTF-8。
+    with rollout_path.open("rb") as file:
+        if start_offset:
+            file.seek(start_offset - 1)
+            previous_byte = file.read(1)
+            if not previous_byte:
+                raise ValueError(f"偏移量 {start_offset} 超过文件末尾")
+            # 已读取的最后一条完整记录可能在下一次追加时才补换行。
+            if previous_byte != b"\n" and file.readline().strip():
+                raise ValueError(f"偏移量 {start_offset} 落在 JSONL 行中间")
+        file.seek(start_offset)
+        for raw_line in file:
+            try:
+                record = json.loads(raw_line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                if not raw_line.endswith(b"\n"):
+                    # 写入方可能仍在追加这行，下次从行首重新读取。
+                    break
+                record = None
 
-                if not isinstance(record, dict) or record.get("type") != "event_msg":
-                    continue
-                payload = record.get("payload")
-                if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                    continue
-                timestamp = record.get("timestamp")
-                info = payload.get("info")
-                usage = info.get("last_token_usage") if isinstance(info, dict) else None
-                total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-                # bool 在 Python 是 int 的子类，不应被当成 token 数。
-                if not isinstance(timestamp, str) or isinstance(total_tokens, bool) or not isinstance(total_tokens, int):
-                    continue
-                events.append((timestamp, total_tokens))
-    except OSError as error:
-        print(f"无法读取 {rollout_path}: {error}", file=sys.stderr)
+            offset = file.tell()
+            if not isinstance(record, dict) or record.get("type") != "event_msg":
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                continue
+            timestamp = record.get("timestamp")
+            info = payload.get("info")
+            usage = info.get("last_token_usage") if isinstance(info, dict) else None
+            total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            # bool 在 Python 是 int 的子类，不应被当成 token 数。
+            if not isinstance(timestamp, str) or isinstance(total_tokens, bool) or not isinstance(total_tokens, int):
+                continue
+            events.append((timestamp, total_tokens))
 
     return events, offset
 
 
 def build(base_dirs, output_dir):
     """扫描全部 rollout，写入用户序列及 JSONL 修改时间、偏移量索引。"""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    with lock_output_dir(output_dir):
+        return _build(base_dirs, output_dir)
+
+
+def _build(base_dirs, output_dir):
     events_by_user = defaultdict(list)
     time_index = {}
     offset_index = {}
     files_processed = 0
 
     for username, rollout_path in rollout_files(base_dirs):
-        events, offset = token_events(rollout_path)
         try:
             modified_time = rollout_path.stat().st_mtime
+            events, offset = token_events(rollout_path)
         except OSError as error:
-            print(f"无法获取 {rollout_path} 的修改时间: {error}", file=sys.stderr)
+            print(f"无法读取 {rollout_path}: {error}", file=sys.stderr)
             continue
 
         files_processed += 1
@@ -127,12 +173,8 @@ def build(base_dirs, output_dir):
             for timestamp, total_tokens in events:
                 file.write(f"{timestamp}\t{total_tokens}\n")
 
-    with (output_dir / TIME_INDEX_NAME).open("w", encoding="utf-8", newline="\n") as file:
-        json.dump(time_index, file, ensure_ascii=False, indent=2, sort_keys=True)
-        file.write("\n")
-    with (output_dir / OFFSET_INDEX_NAME).open("w", encoding="utf-8", newline="\n") as file:
-        json.dump(offset_index, file, ensure_ascii=False, indent=2, sort_keys=True)
-        file.write("\n")
+    write_index(output_dir / OFFSET_INDEX_NAME, offset_index)
+    write_index(output_dir / TIME_INDEX_NAME, time_index)
 
     return files_processed, sum(len(events) for events in events_by_user.values()), len(events_by_user)
 
